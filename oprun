@@ -19,6 +19,9 @@ set -e
 ENV_FILE=".env.template"
 ENVIRONMENT=""
 SHOW_HELP=false
+NO_MASKING="${OP_RUN_NO_MASKING:-false}"
+FORCE_MASKING=false
+MASK_PLACEHOLDER="******"
 
 # Color codes for output (only if terminal supports it)
 if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]]; then
@@ -46,6 +49,8 @@ ${YELLOW}USAGE:${NC}
 ${YELLOW}OPTIONS:${NC}
 	-e, --env-file FILE   Use specified env file (default: .env.template)
 	-E, --environment ID  Load variables from a 1Password Environment (beta)
+	    --mask            Force masking even on an interactive terminal
+	    --no-masking      Do not mask secret values in the command's output
 	-h, --help            Show this help message
 	-v, --verbose         Show loaded environment variables (for debugging)
 
@@ -54,7 +59,16 @@ ${YELLOW}EXAMPLES:${NC}
 	oprun -- docker-compose up
 	oprun -e secrets.env -- python manage.py runserver
 	oprun --environment <environment-id> -- printenv
+	oprun --no-masking -- env
 	oprun -v npm run test
+
+${YELLOW}MASKING:${NC}
+	Secret values resolved from 1Password are replaced with
+	'${MASK_PLACEHOLDER}' when the command's output is redirected
+	(piped or written to a file). On an interactive terminal the command
+	runs unmasked so full-screen/TUI programs work normally.
+	Force masking on a terminal with --mask.
+	Disable masking entirely with --no-masking or OP_RUN_NO_MASKING=true.
 
 ${YELLOW}ENV FILE FORMAT:${NC}
 	Create a .env.template file with 1Password secret references:
@@ -84,6 +98,14 @@ while [[ $# -gt 0 ]]; do
 		-E|--environment)
 			ENVIRONMENT="$2"
 			shift 2
+			;;
+		--no-masking)
+			NO_MASKING=true
+			shift
+			;;
+		--mask)
+			FORCE_MASKING=true
+			shift
 			;;
 		-v|--verbose)
 			VERBOSE=true
@@ -167,6 +189,106 @@ if [[ -n "$ENVIRONMENT" ]]; then
 	env_vars="${env_vars}${env_vars:+$'\n'}${environment_vars}"
 fi
 
+# Build the list of secret values that must be masked in the command output
+declare -a SECRET_KEYS=()
+declare -a MASK_VALUES=()
+declare -a MASK_PATTERNS=()
+declare -A RESOLVED_VARS=()
+
+# Index the resolved variables by name
+while IFS= read -r line || [[ -n "$line" ]]; do
+	line="${line%$'\r'}"
+	if [[ "$line" == *"="* ]]; then
+		key="${line%%=*}"
+		value="${line#*=}"
+		value="${value%\"}"; value="${value#\"}"
+		value="${value%\'}"; value="${value#\'}"
+		RESOLVED_VARS["$key"]="$value"
+	fi
+done <<< "$env_vars"
+
+# Keys from the env file whose value is a 1Password secret reference
+if [[ -f "$ENV_FILE" ]]; then
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		line="${line%$'\r'}"
+		if [[ "$line" == *"="* ]]; then
+			key="${line%%=*}"
+			key="${key//[[:space:]]/}"
+			value="${line#*=}"
+			if [[ -n "$key" ]] && [[ "$value" == *"op://"* ]]; then
+				SECRET_KEYS+=("$key")
+			fi
+		fi
+	done < "$ENV_FILE"
+fi
+
+# Every variable returned from a 1Password Environment is treated as a secret
+if [[ -n "$ENVIRONMENT" ]]; then
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		line="${line%$'\r'}"
+		if [[ "$line" == *"="* ]]; then
+			key="${line%%=*}"
+			key="${key//[[:space:]]/}"
+			if [[ -n "$key" ]]; then
+				SECRET_KEYS+=("$key")
+			fi
+		fi
+	done <<< "$environment_vars"
+fi
+
+# Resolve the identified keys to their secret values
+for key in "${SECRET_KEYS[@]}"; do
+	value="${RESOLVED_VARS[$key]:-}"
+	if [[ -n "$value" ]]; then
+		MASK_VALUES+=("$value")
+	fi
+done
+
+# Sort values longest-first so overlapping secrets are masked correctly
+if (( ${#MASK_VALUES[@]} > 1 )); then
+	for ((i = 0; i < ${#MASK_VALUES[@]}; i++)); do
+		for ((j = i + 1; j < ${#MASK_VALUES[@]}; j++)); do
+			if (( ${#MASK_VALUES[j]} > ${#MASK_VALUES[i]} )); then
+				tmp="${MASK_VALUES[i]}"
+				MASK_VALUES[i]="${MASK_VALUES[j]}"
+				MASK_VALUES[j]="$tmp"
+			fi
+		done
+	done
+fi
+
+# Escape glob metacharacters so masking performs literal replacement
+for value in "${MASK_VALUES[@]}"; do
+	pattern=$(printf '%s' "$value" | sed 's/[][*?\\]/\\&/g')
+	MASK_PATTERNS+=("$pattern")
+done
+
+# Replace every occurrence of a secret value with the placeholder
+mask_stream() {
+	local line pattern
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		for pattern in "${MASK_PATTERNS[@]}"; do
+			line="${line//$pattern/$MASK_PLACEHOLDER}"
+		done
+		printf '%s\n' "$line"
+	done
+}
+
+# Export the injected variables into the current environment
+load_env_vars() {
+	local line trimmed
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		line="${line%$'\r'}"
+		trimmed="${line#"${line%%[![:space:]]*}"}"
+		if [[ -z "$trimmed" ]] || [[ "${trimmed:0:1}" == "#" ]]; then
+			continue
+		fi
+		if [[ "$trimmed" == *"="* ]]; then
+			export "$trimmed"
+		fi
+	done <<< "$env_vars"
+}
+
 # Show loaded variables if verbose mode is enabled
 if [[ "$VERBOSE" == "true" ]]; then
 	echo -e "${GREEN}Loaded environment variables:${NC}"
@@ -176,12 +298,32 @@ fi
 
 echo -e "${GREEN}Executing command with injected secrets...${NC}"
 
+# Masking requires piping the command's output through a filter, which breaks
+# full-screen/TUI programs because stdout and stderr are no longer a terminal.
+# Only mask when the output is redirected (piped or written to a file), unless
+# masking is explicitly forced with --mask.
+USE_MASKING=false
+if [[ "$NO_MASKING" != "true" ]] && [[ ${#MASK_PATTERNS[@]} -gt 0 ]]; then
+	if [[ "$FORCE_MASKING" == "true" ]] || [[ ! -t 1 ]]; then
+		USE_MASKING=true
+	fi
+fi
+
 # Execute the command with injected environment variables
 # Using a subshell to avoid polluting the current environment
-(
-	# Export all the variables
-	export $(echo "$env_vars" | xargs)
-
-	# run the command 
-	exec $@    
-)
+if [[ "$USE_MASKING" == "true" ]]; then
+	# Merge stdout and stderr, masking secret values as they stream
+	set +e
+	(
+		load_env_vars
+		"$@"
+	) 2>&1 | mask_stream
+	exit_code=${PIPESTATUS[0]}
+	exit "$exit_code"
+else
+	# Pass the terminal through untouched so interactive/TUI commands work
+	(
+		load_env_vars
+		exec "$@"
+	)
+fi

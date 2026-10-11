@@ -104,6 +104,30 @@ oprun --environment blgexucrwfr2dtsxe2q4uu7dp4 -e extra.env -- ./my-script.sh
 
 When the same variable is defined in both a 1Password Environment and an env file, the Environment value takes precedence, matching the native 1Password CLI behavior.
 
+### `--mask` and `--no-masking`
+
+By default, `oprun` replaces secret values resolved from 1Password with `******` in the command's output **when that output is redirected** (piped or written to a file) — which is when secrets are most likely to end up in a log.
+
+When the command is attached to an interactive terminal, `oprun` runs it without masking so full-screen/TUI programs (for example, `copilot`, `htop`, or `vim`) work normally. Masking requires piping the command's output through a filter, which makes stdout and stderr a non-terminal and stops TUIs from rendering.
+
+```bash
+# Redirected output is masked
+oprun -- npm run start > app.log
+
+# Interactive commands run normally on a terminal
+oprun copilot
+
+# Force masking even on an interactive terminal (breaks TUI programs)
+oprun --mask -- printenv
+
+# Disable masking entirely
+oprun --no-masking -- env
+```
+
+Use `--no-masking` (or the `OP_RUN_NO_MASKING=true` environment variable) to disable masking altogether, and `--mask` to force masking even when attached to a terminal.
+
+Secrets are identified from env file entries whose value is a 1Password secret reference (`op://...`) and from every variable loaded from a 1Password Environment. Values that are not secret references (for example, `NODE_ENV=development`) are left untouched.
+
 ### `-v, --verbose`
 
 Enable verbose mode to display loaded environment variables for debugging purposes.
@@ -154,6 +178,13 @@ oprun --verbose --env-file staging.env -- docker compose up --build
 
 While this emulates the spirit of the 1Password CLI's `op run` command it doesn't match one-to-one.
 
-### Injected secrets will not be omitted from STDOUT
+### Masking is best-effort
 
-In the native 1Password CLI's `op run` command all instances of your secret are omitted or "masked" unless you use the `--no-masking` flag. This implementation does not do any masking at all. This is something we may be able to implement down the line.
+`oprun` masks secrets by replacing literal occurrences of each resolved secret value in the command's output. This differs from the native CLI in a few ways:
+
+- Only literal values are masked. If a command transforms a secret before printing it (for example, base64- or URL-encoding), the transformed value will not be caught.
+- Secrets are matched per line, so a value split across multiple writes or lines may not be fully masked.
+- Masking is skipped when the command is attached to an interactive terminal (unless `--mask` is passed), because piping the output would break full-screen/TUI programs.
+- Because the CLI does not expose per-variable masking metadata, every value loaded from a 1Password Environment is treated as a secret, while env file values are only masked when they are `op://` secret references.
+
+Use `--no-masking` if masking interferes with a command's output.
