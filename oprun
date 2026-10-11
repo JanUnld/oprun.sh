@@ -10,12 +10,14 @@
 #   oprun npm run start
 #   oprun -- docker-compose up
 #   oprun -e secrets.env -- python manage.py runserver
+#   oprun --environment <id> -- printenv
 #   oprun -h
 
 set -e
 
 # Default values
 ENV_FILE=".env.template"
+ENVIRONMENT=""
 SHOW_HELP=false
 
 # Color codes for output (only if terminal supports it)
@@ -43,6 +45,7 @@ ${YELLOW}USAGE:${NC}
 
 ${YELLOW}OPTIONS:${NC}
 	-e, --env-file FILE   Use specified env file (default: .env.template)
+	-E, --environment ID  Load variables from a 1Password Environment (beta)
 	-h, --help            Show this help message
 	-v, --verbose         Show loaded environment variables (for debugging)
 
@@ -50,6 +53,7 @@ ${YELLOW}EXAMPLES:${NC}
 	oprun npm run start
 	oprun -- docker-compose up
 	oprun -e secrets.env -- python manage.py runserver
+	oprun --environment <environment-id> -- printenv
 	oprun -v npm run test
 
 ${YELLOW}ENV FILE FORMAT:${NC}
@@ -75,6 +79,10 @@ while [[ $# -gt 0 ]]; do
 			;;
 		-e|--env-file)
 			ENV_FILE="$2"
+			shift 2
+			;;
+		-E|--environment)
+			ENVIRONMENT="$2"
 			shift 2
 			;;
 		-v|--verbose)
@@ -104,12 +112,13 @@ if [[ $# -eq 0 ]]; then
 	exit 1
 fi
 
-# Check if env file exists
-if [[ ! -f "$ENV_FILE" ]]; then
+# Check if env file exists (only required when no Environment is provided)
+if [[ -z "$ENVIRONMENT" ]] && [[ ! -f "$ENV_FILE" ]]; then
 	echo -e "${RED}Error: Env file '$ENV_FILE' not found${NC}" >&2
 	echo -e "${YELLOW}Create an env file with your 1Password secret references:${NC}" >&2
 	echo 'DATABASE_URL="op://vault-name/item-name/field-name"' >&2
 	echo 'API_KEY="op://vault-name/item-name/password"' >&2
+	echo -e "${YELLOW}Or load variables from a 1Password Environment with --environment ID${NC}" >&2
 	exit 1
 fi
 
@@ -134,13 +143,28 @@ if ! $OP_CMD account list &> /dev/null; then
 	exit 1
 fi
 
-echo -e "${BLUE}Loading secrets from $ENV_FILE...${NC}"
+env_vars=""
 
-# Inject secrets and capture the result
-if ! env_vars=$($OP_CMD inject -i "$ENV_FILE" 2>/dev/null); then
-	echo -e "${RED}Error: Failed to inject secrets from 1Password${NC}" >&2
-	echo "Check your env file and 1Password references" >&2
-	exit 1
+# Load variables from the env file (if present)
+if [[ -f "$ENV_FILE" ]]; then
+	echo -e "${BLUE}Loading secrets from $ENV_FILE...${NC}"
+	if ! env_file_vars=$($OP_CMD inject -i "$ENV_FILE" 2>/dev/null); then
+		echo -e "${RED}Error: Failed to inject secrets from 1Password${NC}" >&2
+		echo "Check your env file and 1Password references" >&2
+		exit 1
+	fi
+	env_vars="$env_file_vars"
+fi
+
+# Load variables from a 1Password Environment
+if [[ -n "$ENVIRONMENT" ]]; then
+	echo -e "${BLUE}Loading secrets from 1Password Environment $ENVIRONMENT...${NC}"
+	if ! environment_vars=$($OP_CMD environment read "$ENVIRONMENT" 2>/dev/null); then
+		echo -e "${RED}Error: Failed to read 1Password Environment '$ENVIRONMENT'${NC}" >&2
+		echo "Check the Environment ID" >&2
+		exit 1
+	fi
+	env_vars="${env_vars}${env_vars:+$'\n'}${environment_vars}"
 fi
 
 # Show loaded variables if verbose mode is enabled

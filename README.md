@@ -88,6 +88,22 @@ DB_PASSWORD="op://mytodoapp-prod/database/password"
 GENERIC_CRED="op://1password-vault/1password-credential/field-in-credential"
 ```
 
+### `-E, --environment ID`
+
+Load variables from a [1Password Environment](https://developer.1password.com/docs/environments/) (beta) using its environment ID.
+
+This mirrors the native `op run --environment` flag and requires a [beta build of the 1Password CLI](https://app-updates.agilebits.com/product_history/CLI2#beta) (`2.33.0-beta.02` or later). To find an Environment's ID, open the 1Password app and navigate to **Developer** > **View Environments** > **View environment** > **Manage environment** > **Copy environment ID**.
+
+```bash
+# Load only from a 1Password Environment
+oprun --environment blgexucrwfr2dtsxe2q4uu7dp4 -- printenv
+
+# Combine an Environment with an env file (Environment variables take precedence)
+oprun --environment blgexucrwfr2dtsxe2q4uu7dp4 -e extra.env -- ./my-script.sh
+```
+
+When the same variable is defined in both a 1Password Environment and an env file, the Environment value takes precedence, matching the native 1Password CLI behavior.
+
 ### `-v, --verbose`
 
 Enable verbose mode to display loaded environment variables for debugging purposes.
