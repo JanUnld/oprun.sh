@@ -14,6 +14,9 @@ With that in mind, I created `oprun` to emulate the ergonomics and utility of `o
 
 Before using `oprun`, you'll need:
 
+> [!IMPORTANT]
+> Loading variables from a 1Password Environment (the `--environment` flag) requires the [latest beta build of the 1Password CLI](https://app-updates.agilebits.com/product_history/CLI2#beta), version `2.33.0-beta.02` or later. All other features work with the stable release.
+
 1. **1Password CLI** - Install the 1Password CLI on your system:
    - **Windows/WSL**: Download from [1Password CLI releases](https://developer.1password.com/docs/cli/get-started/)
    - **Linux**: if you can use password based sign-in or service accounts `curl -sSfL https://downloads.1password.com/linux/tar/stable/x86_64/1password-cli-amd64-latest.tar.gz | tar -xzf - -C /usr/local/bin`
@@ -28,7 +31,7 @@ Before using `oprun`, you'll need:
 
 ```bash
 # Download and install oprun to /usr/local/bin
-curl -sSL https://raw.githubusercontent.com/MykalMachon/oprun.sh/main/oprun -o /usr/local/bin/oprun
+curl -sSL https://raw.githubusercontent.com/JanUnld/oprun.sh/main/oprun -o /usr/local/bin/oprun
 chmod +x /usr/local/bin/oprun
 ```
 
